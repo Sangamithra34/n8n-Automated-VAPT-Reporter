@@ -1,0 +1,722 @@
+{
+  "name": "VAPT Passive Scanner and AI Report",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Passive VAPT Scanner",
+        "formDescription": "Enter a target URL you are authorised to test. Only passive, non-intrusive checks are performed.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Target URL",
+              "placeholder": "https://example.com",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Telegram Chat ID",
+              "placeholder": "e.g. 123456789",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Authorization",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Yes, I am authorised to test this target"
+                  },
+                  {
+                    "option": "No"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "path": "vapt-scanner",
+          "respondWithOptions": {
+            "values": {
+              "formSubmittedText": "Scan started. The report will be sent to your Telegram chat in about a minute."
+            }
+          }
+        }
+      },
+      "id": "92f63a52-9240-49a4-acc0-23e411c617fd",
+      "name": "Target URL Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -224,
+        176
+      ],
+      "webhookId": "877246e6-563b-40bf-a3fb-56b2611a4db8",
+      "notes": "Entry point. Collects the target URL, an authorisation confirmation and the Telegram chat ID that receives the report."
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $input.first().json;\nlet raw = String(f['Target URL'] || '').trim();\nconst chatId = String(f['Telegram Chat ID'] || '').trim();\nconst auth = String(f['Authorization'] || '');\nif (raw && raw.indexOf('://') === -1) raw = 'https://' + raw;\nlet valid = false;\nlet reason = '';\nlet domain = '';\nlet origin = '';\nlet targetUrl = raw;\ntry {\n  const idx = raw.indexOf('://');\n  if (idx < 1) throw new Error('bad url');\n  const scheme = raw.slice(0, idx).toLowerCase();\n  const rest = raw.slice(idx + 3);\n  let cut = rest.length;\n  ['/', '?', '#'].forEach((c) => { const p = rest.indexOf(c); if (p > -1 && p < cut) cut = p; });\n  const hostPort = rest.slice(0, cut).toLowerCase();\n  const path = rest.slice(cut) || '/';\n  if (hostPort.indexOf('@') > -1 || !hostPort) throw new Error('bad url');\n  const h = hostPort.split(':')[0];\n  const u = { protocol: scheme + ':', host: hostPort, toString: () => scheme + '://' + hostPort + path };\n  const privateIp = h === 'localhost' || h.startsWith('127.') || h.startsWith('10.') || h.startsWith('192.168.') || h.startsWith('169.254.') || h.startsWith('0.') || /^172\\.(1[6-9]|2[0-9]|3[0-1])\\./.test(h) || h.endsWith('.local') || h.endsWith('.internal');\n  if (u.protocol !== 'http:' && u.protocol !== 'https:') reason = 'Only http and https URLs are supported.';\n  else if (!/^[a-z0-9.-]+$/.test(h) || h.indexOf('.') === -1) reason = 'The domain name is not valid.';\n  else if (privateIp) reason = 'Local and private addresses cannot be scanned.';\n  else if (auth.indexOf('Yes') !== 0) reason = 'Authorisation to test the target was not confirmed.';\n  else if (!chatId) reason = 'Telegram chat ID is missing.';\n  else { valid = true; domain = h; origin = u.protocol + '//' + u.host; targetUrl = u.toString(); }\n} catch (e) {\n  reason = 'The value entered is not a parsable URL.';\n}\nconst scanDate = new Date().toISOString().slice(0, 10);\nreturn [{ json: { valid, reason, input: raw, targetUrl, domain, origin, httpUrl: 'http://' + domain + '/', chatId, scanDate } }];"
+      },
+      "id": "4531d390-48a5-4bb1-82db-5bea45b69726",
+      "name": "Validate URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        160
+      ],
+      "notes": "Normalises the URL, checks scheme / domain format, blocks localhost and private IP ranges (SSRF guard) and requires the authorisation confirmation."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "da3168de-a196-4ba3-878e-22f9aee68631",
+      "name": "URL Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        224,
+        160
+      ],
+      "notes": "True: run the scans. False: tell the user why the input was rejected."
+    },
+    {
+      "parameters": {
+        "url": "={{ $(\"Validate URL\").item.json.httpUrl }}",
+        "options": {
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "714a6329-974b-4cea-8a2a-93c36bc0b59c",
+      "name": "Check HTTP Status and Redirect",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        -416
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Requests the plain-HTTP URL without following redirects to see whether it upgrades to HTTPS."
+    },
+    {
+      "parameters": {
+        "numberInputs": 6
+      },
+      "id": "75317d5e-d556-4674-9a4b-50e409d94157",
+      "name": "Merge Scan Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        896,
+        0
+      ],
+      "notes": "Waits for all six parallel checks to finish before scoring."
+    },
+    {
+      "parameters": {
+        "url": "={{ $(\"Validate URL\").item.json.targetUrl }}",
+        "options": {
+          "redirect": {
+            "redirect": {}
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "c12fe8b3-cd2a-49bd-883c-01c8301af45f",
+      "name": "Check Security Headers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        -224
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Fetches the target (following redirects) and records response headers: HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Server, etc."
+    },
+    {
+      "parameters": {
+        "url": "={{ $(\"Validate URL\").item.json.origin }}/",
+        "options": {
+          "redirect": {
+            "redirect": {}
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "2985abe3-7793-4202-9327-483932531c63",
+      "name": "Check Cookie Flags",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        -32
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Separate request to the site root to capture Set-Cookie headers (Secure, HttpOnly, SameSite)."
+    },
+    {
+      "parameters": {
+        "url": "={{ $(\"Validate URL\").item.json.origin }}/robots.txt",
+        "options": {
+          "redirect": {
+            "redirect": {}
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "59682d9b-2e48-47aa-8d4c-3f6810ea9df0",
+      "name": "Fetch robots.txt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        160
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Looks for robots.txt and any sensitive paths it discloses."
+    },
+    {
+      "parameters": {
+        "url": "={{ $(\"Validate URL\").item.json.origin }}/sitemap.xml",
+        "options": {
+          "redirect": {
+            "redirect": {}
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "9511ffd8-61cd-413b-8cb3-d04f8f9740ef",
+      "name": "Fetch sitemap.xml",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        160
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Checks whether sitemap.xml is exposed."
+    },
+    {
+      "parameters": {
+        "url": "=https://{{ $(\"Validate URL\").item.json.domain }}/",
+        "options": {
+          "redirect": {
+            "redirect": {}
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "54ca8892-775e-4427-8904-bf9771c00ef7",
+      "name": "Check SSL/TLS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        352
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "HTTPS request with strict certificate validation. A failure (expired, self-signed, hostname mismatch) is captured as the error message."
+    },
+    {
+      "parameters": {
+        "url": "=https://dns.google/resolve?name={{ $(\"Validate URL\").item.json.domain }}&type=A",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "c1d793fd-abe3-47ca-be06-f10d2c119fc5",
+      "name": "DNS and IP Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        544
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Resolves A records through Google DNS-over-HTTPS to get IP details."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId || \"0\" }}",
+        "text": "=VAPT scan rejected for \"{{ $json.input }}\": {{ $json.reason }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7b638c06-7a57-4157-bd67-b5ff58d1427d",
+      "name": "Notify Invalid Input",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        448,
+        688
+      ],
+      "webhookId": "666d6508-a5d0-4bc1-8307-837344e557e3",
+      "credentials": {
+        "telegramApi": {
+          "id": "x5drj3yBOaYFnyrG",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Error handling: reports a rejected URL back to the user."
+    },
+    {
+      "parameters": {
+        "jsCode": "const g = (n) => { try { return $(n).first().json; } catch (e) { return { error: { message: 'no data' } }; } };\nconst v = $('Validate URL').first().json;\nconst st = g('Check HTTP Status and Redirect');\nconst hd = g('Check Security Headers');\nconst ck = g('Check Cookie Flags');\nconst rb = g('Fetch robots.txt');\nconst sm = g('Fetch sitemap.xml');\nconst ssl = g('Check SSL/TLS');\nconst dns = g('DNS and IP Lookup');\nconst findings = [];\nconst add = (category, title, severity, evidence, impact, remediation) => {\n  findings.push({ id: 'VAPT-' + String(findings.length + 1).padStart(3, '0'), category, title, severity, evidence: String(evidence).slice(0, 300), impact, remediation });\n};\nconst hdrs = (r) => (r && r.headers) ? r.headers : {};\nconst isHttps = v.targetUrl.indexOf('https://') === 0;\nconst reachable = hd && hd.statusCode !== undefined && !hd.error;\n\n// 1. Reachability and redirects\nif (!reachable) {\n  add('Availability', 'Target unreachable', 'High', (hd.error && hd.error.message) || 'No response received', 'The site could not be assessed; it may be down or blocking automated requests.', 'Verify availability and allow-list the scanner if intended.');\n} else {\n  add('Availability', 'Target reachable', 'Info', 'HTTP ' + hd.statusCode + ' from ' + v.targetUrl, 'None.', 'No action required.');\n}\nif (st.error || st.statusCode === undefined) {\n  add('Transport', 'Plain HTTP (port 80) not reachable', 'Info', (st.error && st.error.message) || 'No response', 'HTTP is not served, which is acceptable if HTTPS is enforced.', 'No action required.');\n} else {\n  const loc = String(hdrs(st).location || '');\n  if (st.statusCode >= 300 && st.statusCode < 400 && loc.indexOf('https://') === 0) {\n    add('Transport', 'HTTP redirects to HTTPS', 'Info', 'HTTP ' + st.statusCode + ' -> ' + loc, 'None.', 'No action required.');\n  } else {\n    add('Transport', 'HTTP does not redirect to HTTPS', 'High', 'HTTP ' + st.statusCode + ' Location: ' + (loc || 'none'), 'Users reaching the site over HTTP can be intercepted or downgraded (man-in-the-middle).', 'Redirect all HTTP traffic to HTTPS with a 301 and enable HSTS.');\n  }\n}\n\n// 2. Security headers\nif (reachable) {\n  const h = hdrs(hd);\n  if (isHttps && !h['strict-transport-security']) add('Headers', 'Missing Strict-Transport-Security (HSTS)', 'High', 'Header absent', 'Browsers may be tricked into using HTTP, enabling SSL-stripping attacks.', 'Add Strict-Transport-Security: max-age=31536000; includeSubDomains.');\n  if (!h['content-security-policy']) add('Headers', 'Missing Content-Security-Policy', 'Medium', 'Header absent', 'No browser-side mitigation against XSS and content injection.', 'Define a restrictive Content-Security-Policy.');\n  if (!h['x-frame-options'] && String(h['content-security-policy'] || '').indexOf('frame-ancestors') === -1) add('Headers', 'Missing clickjacking protection (X-Frame-Options)', 'Medium', 'X-Frame-Options and CSP frame-ancestors absent', 'The site can be framed by a malicious page (clickjacking).', 'Add X-Frame-Options: DENY or CSP frame-ancestors.');\n  if (!h['x-content-type-options']) add('Headers', 'Missing X-Content-Type-Options', 'Low', 'Header absent', 'Browsers may MIME-sniff responses.', 'Add X-Content-Type-Options: nosniff.');\n  if (!h['referrer-policy']) add('Headers', 'Missing Referrer-Policy', 'Low', 'Header absent', 'Full URLs may leak to third parties through the Referer header.', 'Add Referrer-Policy: strict-origin-when-cross-origin.');\n  if (!h['permissions-policy']) add('Headers', 'Missing Permissions-Policy', 'Info', 'Header absent', 'Browser features are not explicitly restricted.', 'Add a Permissions-Policy header.');\n  if (h['server'] || h['x-powered-by']) {\n    const disc = [h['server'] ? 'Server: ' + h['server'] : '', h['x-powered-by'] ? 'X-Powered-By: ' + h['x-powered-by'] : ''].filter(Boolean).join('; ');\n    const hasVersion = /[0-9]+\\.[0-9]+/.test(disc);\n    add('Headers', 'Technology disclosure in headers', hasVersion ? 'Medium' : 'Low', disc, 'Version details help attackers select known exploits.', 'Remove or genericise Server and X-Powered-By headers.');\n  }\n  if (String(h['access-control-allow-origin'] || '') === '*') add('Headers', 'Permissive CORS policy (wildcard origin)', 'Medium', 'Access-Control-Allow-Origin: *', 'Any website can read responses from this origin.', 'Restrict allowed origins to trusted domains.');\n}\n\n// 3. Cookies\nconst rawCookies = hdrs(ck)['set-cookie'];\nconst cookies = rawCookies ? (Array.isArray(rawCookies) ? rawCookies : [rawCookies]) : [];\nif (cookies.length === 0) {\n  add('Cookies', 'No cookies set on landing page', 'Info', 'No Set-Cookie header observed', 'None.', 'No action required.');\n}\ncookies.forEach((c) => {\n  const name = String(c).split('=')[0];\n  const low = String(c).toLowerCase();\n  if (isHttps && low.indexOf('secure') === -1) add('Cookies', 'Cookie \"' + name + '\" missing Secure flag', 'Medium', String(c).slice(0, 120), 'Cookie may be sent over unencrypted connections.', 'Set the Secure attribute.');\n  if (low.indexOf('httponly') === -1) add('Cookies', 'Cookie \"' + name + '\" missing HttpOnly flag', 'Medium', String(c).slice(0, 120), 'Cookie is readable by JavaScript and exposed to XSS theft.', 'Set the HttpOnly attribute.');\n  if (low.indexOf('samesite') === -1) add('Cookies', 'Cookie \"' + name + '\" missing SameSite attribute', 'Low', String(c).slice(0, 120), 'Increases exposure to CSRF.', 'Set SameSite=Lax or Strict.');\n});\n\n// 4. robots.txt / sitemap.xml\nif (rb.statusCode === 200 && !rb.error) {\n  const lines = String(rb.body || rb.data || '').split(String.fromCharCode(10));\n  const keys = ['admin', 'backup', 'config', 'private', 'secret', 'internal', 'login', 'staging', 'test', 'db', 'api'];\n  const sensitive = lines.filter((l) => l.toLowerCase().indexOf('disallow') === 0 && keys.some((k) => l.toLowerCase().indexOf(k) > -1)).map((l) => l.trim());\n  if (sensitive.length) add('Information Disclosure', 'robots.txt reveals sensitive paths', 'Low', sensitive.slice(0, 8).join(' | '), 'Attackers can use disclosed paths as a map of interesting targets.', 'Do not rely on robots.txt for secrecy; protect paths with authentication.');\n  else add('Information Disclosure', 'robots.txt present', 'Info', 'HTTP 200, ' + lines.length + ' lines', 'None.', 'No action required.');\n} else {\n  add('Information Disclosure', 'robots.txt not found', 'Info', 'HTTP ' + (rb.statusCode || 'n/a'), 'None.', 'No action required.');\n}\nif (sm.statusCode === 200 && !sm.error) add('Information Disclosure', 'sitemap.xml exposed', 'Info', 'HTTP 200, ' + String(sm.body || sm.data || '').length + ' bytes', 'Reveals site structure (normally intentional).', 'Confirm no private URLs are listed.');\nelse add('Information Disclosure', 'sitemap.xml not found', 'Info', 'HTTP ' + (sm.statusCode || 'n/a'), 'None.', 'No action required.');\n\n// 5. SSL / TLS\nif (ssl.error || ssl.statusCode === undefined) {\n  const msg = (ssl.error && ssl.error.message) || 'No response';\n  const certIssue = /certificate|SSL|TLS|self.signed|expired|altnames|handshake/i.test(msg);\n  add('TLS', certIssue ? 'TLS certificate problem' : 'HTTPS not available', certIssue ? 'Critical' : 'High', msg, 'Visitors see browser warnings or traffic is unencrypted; trust is compromised.', 'Install a valid, trusted certificate matching the hostname and renew before expiry.');\n} else {\n  add('TLS', 'Valid TLS certificate and HTTPS connection', 'Info', 'HTTPS handshake succeeded with strict validation', 'None.', 'No action required.');\n}\n\n// 6. DNS\nconst answers = (dns && dns.Answer) ? dns.Answer.filter((a) => a.type === 1) : [];\nif (dns.error || !answers.length) add('DNS', 'No A record resolved', 'High', 'DNS status ' + (dns.Status !== undefined ? dns.Status : 'error'), 'The domain may not resolve for users.', 'Check DNS configuration.');\nelse add('DNS', 'DNS resolves', 'Info', 'A: ' + answers.map((a) => a.data).join(', ') + ' (TTL ' + answers[0].TTL + 's)', 'None.', 'No action required.');\n\nconst order = ['Critical', 'High', 'Medium', 'Low', 'Info'];\nfindings.sort((a, b) => order.indexOf(a.severity) - order.indexOf(b.severity));\nfindings.forEach((f, i) => { f.id = 'VAPT-' + String(i + 1).padStart(3, '0'); });\nconst counts = {};\norder.forEach((s) => { counts[s] = findings.filter((f) => f.severity === s).length; });\nconst overall = counts.Critical ? 'Critical' : counts.High ? 'High' : counts.Medium ? 'Medium' : counts.Low ? 'Low' : 'Info';\nconst fileName = 'VAPT_' + v.domain + '_' + v.scanDate;\nreturn [{ json: { target: v.targetUrl, domain: v.domain, scanDate: v.scanDate, chatId: v.chatId, fileName, overallRisk: overall, severityCounts: counts, resolvedIps: answers.map((a) => a.data), finalStatus: hd.statusCode || null, findings } }];"
+      },
+      "id": "0a22be90-a75c-41b9-b2ee-a5735635d433",
+      "name": "Score Findings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        96
+      ],
+      "notes": "Applies severity rules (Critical/High/Medium/Low/Info) to every check and produces one structured JSON document."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Write the VAPT report for this assessment data (JSON):\n{{ JSON.stringify($json) }}",
+        "options": {
+          "systemMessage": "You are a senior penetration tester with 15 years of experience writing client-ready VAPT reports. You are given structured JSON from an automated, passive assessment. Use ONLY the facts in the JSON. Never invent findings, versions, or evidence. Be professional, precise and concise.\n\nOutput Markdown only, with EXACTLY these sections in this order and these headings:\n\n# VAPT Report: <domain>\n## 1. Title Page Details\n(bullet list: Report title, Target, Domain, Date, Overall risk rating, Prepared by \"Automated VAPT Workflow (reviewed by AI senior tester)\", Classification \"Confidential\")\n## 2. Executive Summary\n(2 short paragraphs for a non-technical reader, plus the count of findings per severity)\n## 3. Scope and Methodology\n(scope = target URL only; methodology = passive checks: HTTP status and redirect, security headers, cookie flags, robots.txt and sitemap.xml, TLS, DNS; state no exploitation was performed and list limitations such as no authenticated or active testing)\n## 4. Findings Table\n(Markdown table with columns: ID | Title | Severity | Evidence. One row per finding, ordered Critical to Info, using the IDs from the JSON.)\n## 5. Detailed Findings\n(For every finding with severity other than Info: \"### <ID> - <Title> (<Severity>)\" followed by bullets **Description**, **Evidence**, **Impact**. Summarise Info findings in one short paragraph.)\n## 6. Remediation\n(For every finding other than Info: \"### <ID> - <Title>\" followed by concrete remediation steps, with a sample configuration line where relevant.)\n## 7. Conclusion\n(short closing paragraph with prioritised next steps)\n\nDo not add any text before or after the report."
+        }
+      },
+      "id": "221df157-6ce4-4c51-928c-bc162b4bb7f0",
+      "name": "AI Report Writer",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1328,
+        96
+      ],
+      "notes": "Senior-penetration-tester persona. A fixed output format is enforced by the system prompt."
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-5.4"
+        },
+        "builtInTools": {},
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "fa36ddb1-d721-4f5d-80f3-f0e6097fb84f",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1408,
+        320
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "Gateway credits",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "markdownToHtml",
+        "markdown": "={{ $json.output }}",
+        "destinationKey": "reportHtml",
+        "options": {
+          "simpleLineBreaks": false,
+          "tables": true
+        }
+      },
+      "id": "340113da-4ee2-4cd8-ae24-8bb977d1227f",
+      "name": "Markdown to HTML",
+      "type": "n8n-nodes-base.markdown",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        96
+      ],
+      "notes": "Converts the AI report (Markdown) to HTML with table support."
+    },
+    {
+      "parameters": {
+        "jsCode": "const s = $('Score Findings').first().json;\nconst body = $input.first().json.reportHtml;\nconst css = 'body{font-family:Segoe UI,Arial,sans-serif;max-width:900px;margin:40px auto;color:#222;line-height:1.5}h1{color:#0b3d6b;border-bottom:3px solid #0b3d6b;padding-bottom:8px}h2{color:#0b3d6b;margin-top:32px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;font-size:13px;vertical-align:top}th{background:#0b3d6b;color:#fff}code{background:#f2f2f2;padding:1px 4px}';\nconst html = '<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>' + s.fileName + '</title><style>' + css + '</style></head><body>' + body + '</body></html>';\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(html, 'utf8'), s.fileName + '.html', 'text/html');\nreturn [{ json: { fileName: s.fileName, chatId: s.chatId, overallRisk: s.overallRisk, domain: s.domain, counts: s.severityCounts }, binary: { data: binary } }];"
+      },
+      "id": "6f234487-8ea5-4794-97d6-02e8fedf5113",
+      "name": "Build Report File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1904,
+        128
+      ],
+      "notes": "Wraps the report in a styled HTML document and stores it as binary file VAPT_<domain>_<date>.html (print to PDF from any browser)."
+    },
+    {
+      "parameters": {
+        "operation": "sendDocument",
+        "chatId": "={{ $json.chatId }}",
+        "binaryData": true,
+        "additionalFields": {
+          "caption": "=VAPT report for {{ $json.domain }} - overall risk: {{ $json.overallRisk }}",
+          "fileName": "={{ $json.fileName }}.html"
+        }
+      },
+      "id": "c42c89f8-b57f-43e3-9fa9-5c1f1ec00975",
+      "name": "Send Report via Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2128,
+        128
+      ],
+      "webhookId": "c4257d8d-65ab-4314-bc55-5e01cebf1058",
+      "credentials": {
+        "telegramApi": {
+          "id": "x5drj3yBOaYFnyrG",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Delivers the report file to the Telegram chat given in the form."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Target URL Form": {
+      "main": [
+        [
+          {
+            "node": "Validate URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate URL": {
+      "main": [
+        [
+          {
+            "node": "URL Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "URL Valid?": {
+      "main": [
+        [
+          {
+            "node": "Check HTTP Status and Redirect",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Security Headers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Cookie Flags",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch robots.txt",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check SSL/TLS",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "DNS and IP Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Invalid Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check HTTP Status and Redirect": {
+      "main": [
+        [
+          {
+            "node": "Merge Scan Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Scan Results": {
+      "main": [
+        [
+          {
+            "node": "Score Findings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Security Headers": {
+      "main": [
+        [
+          {
+            "node": "Merge Scan Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Check Cookie Flags": {
+      "main": [
+        [
+          {
+            "node": "Merge Scan Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Fetch robots.txt": {
+      "main": [
+        [
+          {
+            "node": "Fetch sitemap.xml",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch sitemap.xml": {
+      "main": [
+        [
+          {
+            "node": "Merge Scan Results",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Check SSL/TLS": {
+      "main": [
+        [
+          {
+            "node": "Merge Scan Results",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "DNS and IP Lookup": {
+      "main": [
+        [
+          {
+            "node": "Merge Scan Results",
+            "type": "main",
+            "index": 5
+          }
+        ]
+      ]
+    },
+    "Score Findings": {
+      "main": [
+        [
+          {
+            "node": "AI Report Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Report Writer": {
+      "main": [
+        [
+          {
+            "node": "Markdown to HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Report Writer",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Markdown to HTML": {
+      "main": [
+        [
+          {
+            "node": "Build Report File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report File": {
+      "main": [
+        [
+          {
+            "node": "Send Report via Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "3fd101c3-b5de-4831-8435-29cb4b8c9f4e",
+  "meta": {
+    "instanceId": "7e03c43795d38834bcc8c902117560b62e908946ceeca4df3c3fe240c951633b"
+  },
+  "nodeGroups": [
+    {
+      "id": "e5fd7aea-c0c0-4445-a1a2-9c4ea423abd5",
+      "name": "Validate and scan target",
+      "nodeIds": [
+        "4531d390-48a5-4bb1-82db-5bea45b69726",
+        "da3168de-a196-4ba3-878e-22f9aee68631",
+        "7b638c06-7a57-4157-bd67-b5ff58d1427d",
+        "714a6329-974b-4cea-8a2a-93c36bc0b59c",
+        "c12fe8b3-cd2a-49bd-883c-01c8301af45f",
+        "2985abe3-7793-4202-9327-483932531c63",
+        "59682d9b-2e48-47aa-8d4c-3f6810ea9df0",
+        "9511ffd8-61cd-413b-8cb3-d04f8f9740ef",
+        "54ca8892-775e-4427-8904-bf9771c00ef7",
+        "c1d793fd-abe3-47ca-be06-f10d2c119fc5",
+        "75317d5e-d556-4674-9a4b-50e409d94157"
+      ],
+      "description": "Takes the submitted URL, rejects bad input, then runs six passive checks in parallel and joins them"
+    },
+    {
+      "id": "5df4edd1-1d58-4e8d-a49d-5fb7363b3027",
+      "name": "Score and write report",
+      "nodeIds": [
+        "0a22be90-a75c-41b9-b2ee-a5735635d433",
+        "221df157-6ce4-4c51-928c-bc162b4bb7f0",
+        "fa36ddb1-d721-4f5d-80f3-f0e6097fb84f",
+        "340113da-4ee2-4cd8-ae24-8bb977d1227f"
+      ],
+      "description": "Rates every finding by severity, then an AI senior tester writes the full report in a fixed format"
+    },
+    {
+      "id": "8debbdba-a0fa-488f-a2c0-4a196d448dec",
+      "name": "Deliver report file",
+      "nodeIds": [
+        "6f234487-8ea5-4794-97d6-02e8fedf5113",
+        "c42c89f8-b57f-43e3-9fa9-5c1f1ec00975"
+      ],
+      "description": "Saves the report as VAPT_domain_date and sends it to the requester on Telegram"
+    }
+  ],
+  "id": "EBYES6pYPg8o8GVQ",
+  "tags": []
+}
